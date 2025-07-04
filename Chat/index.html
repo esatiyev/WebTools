@@ -342,6 +342,9 @@
     import { mavlink_store } from './MAVLink/mavlink_store.js';
     import { setMAVLink, setMavlinkWS } from './shared.js';
 
+    // global storage for vehicle parameters
+    let mavParams = {};
+
 
 
     // show/hide the OpenAI API key field
@@ -426,6 +429,11 @@
         // set up event handlers
         mavlink_ws.onopen = function () {
           mavlink_set_connect_state(true);
+
+          // request the full list of parameters from the vehicle
+          const req = new mavlink20.messages.param_request_list(1, 1);
+          const buffer = MAVLink.send(req);
+          mavlink_ws.send(new Uint8Array(buffer));
         };
         mavlink_ws.onclose = function () {
           mavlink_set_connect_state(false);
@@ -480,6 +488,10 @@
           break;
         case 1: // SYS_STATUS
           //alert("Got a system status: " + JSON.stringify(msg));
+          break;
+        case 22: // PARAM_VALUE
+          const name = msg.param_id.replace(/\0/g, "");
+          mavParams[name] = msg.param_value;
           break;
         case 24: // GPS_RAW_INT
           //alert("Got a GPS raw int: " + JSON.stringify(msg));
