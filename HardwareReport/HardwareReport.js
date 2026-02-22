@@ -12,6 +12,19 @@ import_done[1] = import('https://esm.sh/@octokit/request')
     .catch(error => console.log(error))
 
 
+function configurePlotlyCanvas() {
+  const originalGetContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function(contextType, contextAttributes) {
+    if (contextType === '2d') {
+      contextAttributes = contextAttributes || {};
+      contextAttributes.willReadFrequently = true;
+    }
+    return originalGetContext.call(this, contextType, contextAttributes);
+  };
+}
+configurePlotlyCanvas()
+
+
 let ArduPilot_GitHub_tags
 let octokitRequest_ratelimit_reset
 async function check_release(hash, paragraph) {
@@ -516,20 +529,26 @@ function show_internal_errors(log) {
     let internal_errors = []
 
     // Add from PM
-    if (('PM' in log.messageTypes) &&
-        log.messageTypes.PM.expressions.includes("IntE") &&
-        log.messageTypes.PM.expressions.includes("ErrL") &&
-        log.messageTypes.PM.expressions.includes("ErrC")) {
-        
-        const PM = log.get("PM")
-        const len = PM.TimeUS.length
-        for (let i = 0; i < len; i++) {
-            internal_errors.push({
-                time: PM.TimeUS[i],
-                mask: PM.IntE[i],
-                line: PM.ErrL[i],
-                count: PM.ErrC[i]
-            })
+    if ('PM' in log.messageTypes) {
+        const errorField = 
+            log.messageTypes.PM.expressions.includes("IntE") ? "IntE" :
+            log.messageTypes.PM.expressions.includes("InE") ? "InE" : undefined
+
+        const errorCount = 
+            log.messageTypes.PM.expressions.includes("ErrC") ? "ErrC" :
+            log.messageTypes.PM.expressions.includes("ErC") ? "ErC" : undefined
+
+        if (log.messageTypes.PM.expressions.includes("ErrL") && (errorField != undefined) && (errorCount != undefined)) {
+            const PM = log.get("PM")
+            const len = PM.TimeUS.length
+            for (let i = 0; i < len; i++) {
+                internal_errors.push({
+                    time: PM.TimeUS[i],
+                    mask: PM[errorField][i],
+                    line: PM.ErrL[i],
+                    count: PM[errorCount][i]
+                })
+            }
         }
     }
 
@@ -1083,7 +1102,13 @@ function load_baro(log) {
             for (const inst of Object.keys(log.messageTypes.BARO.instances)) {
                 const i = parseFloat(inst)
                 if (baro[i] != null) {
-                    baro[i].all_healthy = array_all_equal(log.get_instance("BARO", inst, "Health"), 1)
+                    if (log.messageTypes.BARO.expressions.includes("Health")) {
+                        baro[i].all_healthy = array_all_equal(log.get_instance("BARO", inst, "Health"), 1)
+
+                    } else if (log.messageTypes.BARO.expressions.includes("H")) {
+                        baro[i].all_healthy = array_all_equal(log.get_instance("BARO", inst, "H"), 1)
+
+                    }
                 }
             }
         }
@@ -2159,8 +2184,17 @@ function plot_data_rate(log) {
                 "-1": "None",
                  "0": "None",
                  "1": "MAVLink1",
+                 "2": "MAVLink2",
+                 "3": "Frsky D",
+                 "4": "Frsky SPort",
+                 "5": "GPS",
+                 // SerialProtocol_GPS2
+                 "7": "Alexmos Gimbal Serial",
+                 "8": "Gimbal",
+                 "9": "Rangefinder",
                 "10": "FrSky SPort Passthrough (OpenTX)",
                 "11": "Lidar360",
+                // SerialProtocol_Aerotenna_USD1
                 "13": "Beacon",
                 "14": "Volz servo out",
                 "15": "SBus servo out",
@@ -2168,7 +2202,6 @@ function plot_data_rate(log) {
                 "17": "Devo Telemetry",
                 "18": "OpticalFlow",
                 "19": "RobotisServo",
-                 "2": "MAVLink2",
                 "20": "NMEA Output",
                 "21": "WindVane",
                 "22": "SLCAN",
@@ -2179,7 +2212,6 @@ function plot_data_rate(log) {
                 "27": "HottTelem",
                 "28": "Scripting",
                 "29": "Crossfire VTX",
-                 "3": "Frsky D",
                 "30": "Generator",
                 "31": "Winch",
                 "32": "MSP",
@@ -2190,7 +2222,6 @@ function plot_data_rate(log) {
                 "37": "SmartAudio",
                 "38": "FETtecOneWire",
                 "39": "Torqeedo",
-                 "4": "Frsky SPort",
                 "40": "AIS",
                 "41": "CoDevESC",
                 "42": "DisplayPort",
@@ -2198,36 +2229,127 @@ function plot_data_rate(log) {
                 "44": "IRC Tramp",
                 "45": "DDS XRCE",
                 "46": "IMUDATA",
-                 "5": "GPS",
-                 "7": "Alexmos Gimbal Serial",
-                 "8": "Gimbal",
-                 "9": "Rangefinder"
+                // Reserving Serial Protocol 47 for SerialProtocol_IQ
+                "48": "PPP",
+                "49": "i-BUS Telemetry",
+                "50": "IOMCU",
             }
 
-            // Get protocol and baud rate
-            const param_prefix = "SERIAL" + inst + "_"
-            const protocol_num = params[param_prefix + "PROTOCOL"]
+            let title
+            let baud
 
-            let protocol_name = protocol_num
-            let IOMCU = false
-            if ((protocol_num == null) && (inst == 100)) {
-                // Intneral IOMCU UART is logged as instance 100
-                IOMCU = true
-                protocol_name = "IOMCU"
-
-            } else if (protocol_num in serial_protocols) {
-                protocol_name = serial_protocols[protocol_num]
-
-            }
-
-            const baud = IOMCU ? 1500000 : map_baudrate(params[param_prefix + "BAUD"])
-
-            let title = "Serial " + inst
-            if (protocol_name != null) {
-                title += ": " + protocol_name
-                if (baud != null) {
-                    title += ", " + baud + " baud"
+            function getProtocolName(num) {
+                if (num in serial_protocols) {
+                    return serial_protocols[num]
                 }
+                return "protocol " + num
+            }
+
+            function SerialTitle() {
+                const param_prefix = "SERIAL" + inst + "_"
+                const protocol_num = params[param_prefix + "PROTOCOL"]
+                if (protocol_num == undefined) {
+                    // Not a serial port
+                    return false
+                }
+                const name = getProtocolName(protocol_num)
+                title = `Serial ${inst}: ` + getProtocolName(protocol_num)
+
+                if (name == "IOMCU") {
+                    baud = 1500000
+                } else {
+                    baud = map_baudrate(params[param_prefix + "BAUD"])
+                    if (baud != null) {
+                        title += ", " + baud + " baud"
+                    }
+                }
+
+                return true
+            }
+
+            function NetTitle() {
+                const netInst = inst - 20
+                if (netInst < 1) {
+                    // Not a networking serial port
+                    return false
+                }
+                const param_prefix = "NET_P" + netInst + "_"
+                const protocol_num = params[param_prefix + "PROTOCOL"]
+                if (protocol_num == undefined) {
+                    // Not a networking serial port
+                    return false
+                }
+                title = `Networking Port ${netInst}: ` + getProtocolName(protocol_num)
+
+                const type = params[param_prefix + "TYPE"]
+                const types = {
+                    "1": "UDP client",
+                    "2": "UDP server",
+                    "3": "TCP client",
+                    "4": "TCP server",
+                }
+                if (type in types) {
+                    title += " " + types[type]
+                }
+
+                const IP0 = params[param_prefix + "IP0"]
+                const IP1 = params[param_prefix + "IP1"]
+                const IP2 = params[param_prefix + "IP2"]
+                const IP3 = params[param_prefix + "IP3"]
+                const PORT = params[param_prefix + "PORT"]
+
+                if (IP0 != undefined && IP1 != undefined && IP2 != undefined && IP3 != undefined && PORT != undefined) {
+                    title += ` ${IP0}.${IP1}.${IP2}.${IP3}:${PORT}`
+                }
+
+                return true
+            }
+
+            function DroneCANTitle(driverIst) {
+                const offset = driverIst == 1 ? 40 : 50
+                const DCInst = inst - offset
+                if (DCInst < 1) {
+                    // Not a DroneCAN serial port
+                    return false
+                }
+                const param_prefix = `CAN_D${driverIst}_UC_S${DCInst}_`
+                const protocol_num = params[param_prefix + "PRO"]
+                if (protocol_num == undefined) {
+                    // Not a DroneCAN serial port
+                    return false
+                }
+                title = `DroneCAN Driver ${driverIst} Port ${DCInst}: `
+
+                const node = params[param_prefix + "NOD"]
+                const index = params[param_prefix + "IDX"]
+                if (node != undefined && index != undefined) {
+                    title += `NodeID: ${node} Port: ${index} `
+                }
+
+                title += getProtocolName(protocol_num)
+
+                baud = map_baudrate(params[param_prefix + "BD"])
+                if (node != undefined && index != undefined) {
+                    title += " " + baud + " baud"
+                }
+
+                return true
+            }
+
+            function IOMCUTitle() {
+                if (inst != 100) {
+                    // Not IOMCU
+                    return false
+                }
+                baud = 1500000
+                title = "IMUCU, " + baud + " baud"
+                return true
+            }
+
+
+            if (!SerialTitle() && !NetTitle() && !DroneCANTitle(1) && !DroneCANTitle(2) && !IOMCUTitle()) {
+                // Generic title
+                title = "UART " + inst
             }
 
             const UART_inst = log.get_instance("UART", inst)
@@ -2479,18 +2601,23 @@ async function load_log(log_file) {
         }
     }
 
-    if ((version.flight_controller != null) || (version.board_id != null)) {
+    const haveFlightController = version.flight_controller != null
+    const haveBoardId = version.board_id != null
+    if (haveFlightController || haveBoardId) {
         let section = document.getElementById("FC")
         section.hidden = false
         section.previousElementSibling.hidden = false
-        if (version.flight_controller != null) {
+        if (haveFlightController) {
             // Print name given in log
             section.appendChild(document.createTextNode(version.flight_controller))
         }
-        if (version.board_id != null) {
+        if (haveBoardId) {
+            if (haveFlightController) {
+                section.appendChild(document.createElement("br"))
+                section.appendChild(document.createElement("br"))
+            }
+
             // Lookup the board ID
-            section.appendChild(document.createElement("br"))
-            section.appendChild(document.createElement("br"))
             section.appendChild(document.createTextNode("Board ID: " + version.board_id))
             if (version.board_id in board_types) {
                 section.appendChild(document.createTextNode(" " + board_types[version.board_id]))
@@ -2574,17 +2701,26 @@ async function load_log(log_file) {
 
     // Voltage plot
     if (have_POWR || have_MCU) {
-        let plot = document.getElementById("Board_Voltage")
-        plot_visibility(plot, false)
+        let showPlot = false
 
         if (have_POWR) {
             const time = TimeUS_to_seconds(log.get("POWR", "TimeUS"))
 
-            Board_Voltage.data[1].x = time
-            Board_Voltage.data[1].y = log.get("POWR", "VServo")
+            const servo = log.get("POWR", "VServo")
+            if (!array_all_NaN(servo)) {
+                Board_Voltage.data[1].x = time
+                Board_Voltage.data[1].y = servo
+                showPlot = true
+            }
 
-            Board_Voltage.data[2].x = time
-            Board_Voltage.data[2].y = log.get("POWR", "Vcc")
+
+            const vcc = log.get("POWR", "Vcc")
+            if (!array_all_NaN(vcc)) {
+                Board_Voltage.data[2].x = time
+                Board_Voltage.data[2].y = vcc
+                showPlot = true
+            }
+
 
             if (!have_MCU && log.messageTypes.POWR.expressions.includes('MVolt')) {
                 Board_Voltage.data[3].x = time
@@ -2592,6 +2728,8 @@ async function load_log(log_file) {
 
                 Board_Voltage.data[0].x = [...time, ...time.toReversed()]
                 Board_Voltage.data[0].y = [...log.get("POWR", "MVmax"), ...log.get("POWR", "MVmin").toReversed()]
+
+                showPlot = true
             }
         }
 
@@ -2604,9 +2742,14 @@ async function load_log(log_file) {
             Board_Voltage.data[0].x = [...time, ...time.toReversed()]
             Board_Voltage.data[0].y = [...log.get("MCU", "MVmax"), ...log.get("MCU", "MVmin").toReversed()]
 
+            showPlot = true
         }
 
-        Plotly.redraw(plot)
+        if (showPlot) {
+            let plot = document.getElementById("Board_Voltage")
+            plot_visibility(plot, false)
+            Plotly.redraw(plot)
+        }
     }
 
     // Power flags

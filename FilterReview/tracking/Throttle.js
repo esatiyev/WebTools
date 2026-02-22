@@ -3,6 +3,11 @@ class ThrottleTarget extends NotchTarget {
     constructor(log) {
         super(log, "RATE", "AOut", "Throttle", 1)
 
+        // Need RC outputs for per motor throttle notch
+        if (!("RCOU" in log.messageTypes)) {
+            return
+        }
+
         // Read params
         const PARM = log.get("PARM")
 
@@ -308,7 +313,7 @@ class ThrottleTarget extends NotchTarget {
     }
 
     have_data(config) {
-        const dynamic = (config.options & (1<<1)) != 0
+        const dynamic = (config?.options & (1<<1)) != 0
         if (dynamic) {
             if (this.data.length == 0) {
                 return false
@@ -327,7 +332,7 @@ class ThrottleTarget extends NotchTarget {
         const motors_throttle = Math.max(0, thrust)
         const throttle_norm = Math.sqrt(motors_throttle / config.ref)
         if (get_filter_version() == 2) {
-            return config.freq * throttle_norm
+            return Math.abs(config.freq * throttle_norm)
         }
         return config.freq * Math.max(config.min_ratio, throttle_norm)
     }

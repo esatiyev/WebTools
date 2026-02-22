@@ -637,7 +637,7 @@ function update_param_diff(table, rows) {
     rows[0].getData().param_diff = null
 
     // Calculate diff for each row
-    for (i = 1; i<rows.length; i++) {
+    for (let i = 1; i<rows.length; i++) {
         const param_diff = get_param_diff(rows[i].getData().info.params, rows[i-1].getData().info.params)
         rows[i].getData().param_diff = param_diff
     }
@@ -655,6 +655,11 @@ function load_log(log_file) {
         return
     }
 
+    // Probably not a ArduPilot log
+    if (Object.keys(log.messageTypes).length == 0) {
+        return
+    }
+
     const version = get_version_and_board(log)
 
     // Populate the board name from boards lookup
@@ -664,21 +669,23 @@ function load_log(log_file) {
     }
 
     // Get params, extract flight time
-    const PARM = log.get("PARM")
     let params = {}
     let start_flight_time
     let end_flight_time
-    for (let i = 0; i < PARM.Name.length; i++) {
-        const name = PARM.Name[i]
-        const value = PARM.Value[i]
-        params[name] = value
+    if ("PARM" in log.messageTypes) {
+        const PARM = log.get("PARM")
+        for (let i = 0; i < PARM.Name.length; i++) {
+            const name = PARM.Name[i]
+            const value = PARM.Value[i]
+            params[name] = value
 
-        // Check for cumulative flight time, get first and last value
-        if (name == "STAT_FLTTIME") {
-            if (start_flight_time == null) {
-                start_flight_time = value
+            // Check for cumulative flight time, get first and last value
+            if (name == "STAT_FLTTIME") {
+                if (start_flight_time == null) {
+                    start_flight_time = value
+                }
+                end_flight_time = value
             }
-            end_flight_time = value
         }
     }
 
